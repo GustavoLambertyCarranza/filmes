@@ -1,0 +1,39 @@
+from locust import HttpUser, task, between
+from faker import Faker
+
+fake = Faker('pt_BR')
+
+class FilmeUser(HttpUser):
+    wait_time = between(1, 2)
+
+    def on_start(self):
+        self.token = None
+        email = f"load_{fake.uuid4()[:8]}@test.com"
+        password = "pass123"
+        headers_xml = {"Content-Type": "application/xml", "Accept": "application/xml"}
+
+        # Registro via XML (O segredo da sua colega)
+        reg_payload = f"<?xml version='1.0' encoding='UTF-8'?><usuario><nome>{fake.name()}</nome><email>{email}</email><password>{password}</password></usuario>"
+        with self.client.post("/auth/register", data=reg_payload, headers=headers_xml, catch_response=True) as resp:
+            if resp.status_code not in [200, 201]:
+                return
+
+        # Login via JSON (Normalmente o login aceita JSON)
+        login_json = {"email": email, "password": password}
+        with self.client.post("/auth/login", json=login_json, catch_response=True) as log_resp:
+            if log_resp.status_code == 200:
+                self.token = log_resp.json().get("token")
+
+    @task
+    def ciclo_filme(self):
+        if not self.token: return
+        headers = {"Authorization": f"Bearer {self.token}", "Content-Type": "application/xml", "Accept": "application/xml"}
+
+        xml = f"<?xml version='1.0' encoding='UTF-8'?><filme><titulo>Filme_{fake.uuid4()[:8]}</titulo><duracaoMin>120</duracaoMin><ano>2024</ano></filme>"
+        with self.client.post("/filmes", data=xml, headers=headers, catch_response=True, name="POST /filmes") as response:
+            if response.status_code == 201:
+                location = response.headers.get("Location")
+                if location:
+                    self.client.get(location, headers=headers, name="GET /filmes/[id]")
+            else:
+                response.failure(f"Erro POST: {response.status_code}")
